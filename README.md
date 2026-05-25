@@ -21,8 +21,9 @@ A distributed key-value database built in Node.js, implementing the **Raft conse
 13. [Data Flow Walkthroughs](#data-flow-walkthroughs)
 14. [Logging](#logging)
 15. [Startup & Lifecycle](#startup--lifecycle)
-16. [Error Code System](#error-code-system)
-17. [Known Limitations & Design Decisions](#known-limitations--design-decisions)
+16. [Running with Podman](#running-with-podman)
+17. [Error Code System](#error-code-system)
+18. [Known Limitations & Design Decisions](#known-limitations--design-decisions)
 
 ---
 
@@ -728,6 +729,108 @@ t=8s    First election check — if no heartbeat in last 5-10s, election starts
 ```
 
 Because all three nodes start simultaneously with no pre-configured leader, **one of them will always trigger an election** within the first 5–15 seconds. The randomized timeout means elections usually resolve quickly without split votes.
+
+---
+
+## Running with Podman
+
+All 4 services (RP + 3 DN nodes) correm num **Podman Pod**, o que faz com que partilhem o mesmo namespace de rede. Isto significa que os endereços `127.0.0.1` que já existem no código continuam a funcionar sem qualquer alteração.
+
+### Pré-requisitos
+
+- Podman instalado
+- Podman Machine a correr: `podman machine start`
+
+### 1. Primeira vez (build da imagem)
+
+Na raiz do projeto:
+
+```powershell
+podman build -t falcondb:latest .
+```
+
+Só é necessário repetir este passo se alterares código.
+
+### 2. Arrancar o cluster
+
+```powershell
+podman pod create --name falcondb -p 8000:8000
+
+$LOGS = "$PWD\logs"
+New-Item -ItemType Directory -Force -Path $LOGS
+
+podman run -d --pod falcondb --name rp -v "${LOGS}:/app/logs" falcondb:latest node RP/server.js
+podman run -d --pod falcondb --name dn0s1 -v falcondb-dn0s1:/app/DBdata -v "${LOGS}:/app/logs" falcondb:latest node DN/dn0s1/server.js
+podman run -d --pod falcondb --name dn0s2 -v falcondb-dn0s2:/app/DBdata -v "${LOGS}:/app/logs" falcondb:latest node DN/dn0s2/server.js
+podman run -d --pod falcondb --name dn0s3 -v falcondb-dn0s3:/app/DBdata -v "${LOGS}:/app/logs" falcondb:latest node DN/dn0s3/server.js
+```
+
+Aguarda ~10 segundos para o Raft eleger um leader.
+
+### 3. Verificar que está tudo up
+
+```powershell
+podman ps --pod
+```
+
+Devem aparecer 5 linhas (4 containers + 1 infra do pod), todas com `STATUS = Up`.
+
+### 4. Verificar o estado do cluster via API
+
+```powershell
+(Invoke-WebRequest -Uri http://localhost:8000/status -UseBasicParsing).Content
+```
+
+Resposta esperada (um dos nós com `"state":"leader"`):
+
+```json
+{"data":[{"dn":"0","status":{"data":{"node":"9001","uptime":12.3,"state":"leader"},"error":0}}],"error":0}
+```
+
+### 5. Ver os logs
+
+Os logs ficam na pasta `logs/` na raiz do projeto:
+
+| Ficheiro | Serviço |
+|---|---|
+| `logs/rp.log` | Reverse Proxy |
+| `logs/dn0s1.log` | Data Node 1 |
+| `logs/dn0s2.log` | Data Node 2 |
+| `logs/dn0s3.log` | Data Node 3 |
+
+Para ver em tempo real:
+
+```powershell
+podman logs -f dn0s1
+```
+
+### 6. Parar o cluster
+
+```powershell
+podman pod stop falcondb
+podman pod rm falcondb
+```
+
+Os dados persistem nos volumes `falcondb-dn0s1`, `falcondb-dn0s2`, `falcondb-dn0s3`. Na próxima vez que arrancares, os dados continuam lá.
+
+Para apagar os dados também:
+
+```powershell
+podman volume rm falcondb-dn0s1 falcondb-dn0s2 falcondb-dn0s3
+```
+
+### Teste rápido CRUD
+
+```powershell
+# CREATE
+Invoke-WebRequest -Uri http://localhost:8000/db/c -Method POST -ContentType "application/json" -Body '{"key":"teste","value":"funciona"}' -UseBasicParsing | Select-Object -ExpandProperty Content
+
+# READ
+(Invoke-WebRequest -Uri "http://localhost:8000/db/r?key=teste" -UseBasicParsing).Content
+
+# DELETE
+(Invoke-WebRequest -Uri "http://localhost:8000/db/d?key=teste" -UseBasicParsing).Content
+```
 
 ---
 

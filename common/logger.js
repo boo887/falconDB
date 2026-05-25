@@ -1,4 +1,12 @@
+const fs = require('fs');
+const path = require('path');
 const winston = require('winston');
+
+const LOGS_DIR = path.join(__dirname, '..', 'logs');
+
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR);
+}
 
 function createLogger(filename) {
 
@@ -12,7 +20,7 @@ function createLogger(filename) {
 
     transports: [
       new winston.transports.File({
-        filename
+        filename: path.join(LOGS_DIR, filename)
       }),
       new winston.transports.Console()
     ]
